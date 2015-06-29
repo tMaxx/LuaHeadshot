@@ -19,6 +19,5 @@
       </library>
     </orderEntry>
     <orderEntry type="sourceFolder" forTests="false" />
-    <orderEntry type="library" name="org.apache.commons:commons-lang3:3.4" level="project" />
   </component>
 </module>

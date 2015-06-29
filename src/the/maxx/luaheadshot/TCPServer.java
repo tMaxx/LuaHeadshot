@@ -2,12 +2,9 @@ package the.maxx.luaheadshot;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -92,7 +89,7 @@ public class TCPServer extends Thread
 		final ClientState state;
 		final TCPServer server;
 
-		public ClientHandler(TCPServer serv, Socket connectionSocket, int id)
+		public ClientHandler(TCPServer serv, Socket connectionSocket, int id) throws IOException
 		{
 			super();
 			this.connectionSocket = connectionSocket;
@@ -101,24 +98,34 @@ public class TCPServer extends Thread
 			this.nodeId = server.node.datahub.getNextFreeSlotId();
 			if (this.nodeId <= 0)
 				this.nodeId = -1 * id;
-			state = new ClientState();
+			if (this.nodeId > 0)
+				state = server.node.datahub.moveToRespawnPoint(this.nodeId);
+			else
+				state = new ClientState();
 			state.userId = id;
 			try
 			{
 				inFromClient = new BufferedInputStream(connectionSocket.getInputStream());
 				outToClient = new BufferedOutputStream(connectionSocket.getOutputStream());
-				this.sendString("[" + id + "|" + ClientState.Action.CONNECTED + "|" + 0 + "|" +
-					0 + "|" + 0 + "|" + 0 + "|" + 0 + "|" + 0 + "]");
+
+				server.node.datahub.readWriteSync.lock();
 				TCPServer.Clients.add(this);
+				server.node.datahub.announceNewPlayer(this);
 				this.start();
+				//signal new data on list
+				server.node.datahub.setAllAsNew();
+				server.node.datahub.readWriteSync.unlock();
+
 				Log.Info("New client connected, id:" + nodeId + "@" + connectionSocket.getInetAddress());
 			}
 			catch (IOException e)
 			{
 				Log.Exception("Client socket init failed", e);
+				connectionSocket.close();
 			}
 		}
 
+		//client run loop
 		@Override
 		public void run()
 		{
@@ -130,12 +137,13 @@ public class TCPServer extends Thread
 			{
 				try
 				{
-					inFromClient = new BufferedInputStream(connectionSocket.getInputStream());
-
 					out = "";
 
 					while ((c = (char) inFromClient.read()) != closeCharacter)
 						out = out + String.valueOf(c);
+
+					if (nodeId < 0)
+						return;
 
 					out = out.substring(1, out.length() - 1);
 
@@ -143,17 +151,17 @@ public class TCPServer extends Thread
 
 					synchronized (state)
 					{
-						state.action = ClientState.Action.valueOf(splittedOut[0]);
-						state.posX = Double.valueOf(splittedOut[1]);
-						state.posY = Double.valueOf(splittedOut[2]);
-						state.posZ = Double.valueOf(splittedOut[3]);
-						state.rotX = Double.valueOf(splittedOut[4]);
-						state.rotY = Double.valueOf(splittedOut[5]);
-						state.rotZ = Double.valueOf(splittedOut[6]);
-					}
+						state.userId = Integer.valueOf(splittedOut[0]);
+						state.action = ClientState.Action.valueOf(splittedOut[1]);
+						state.posX = Double.valueOf(splittedOut[2]);
+						state.posY = Double.valueOf(splittedOut[3]);
+						state.posZ = Double.valueOf(splittedOut[4]);
+						state.rotX = Double.valueOf(splittedOut[5]);
+						state.rotY = Double.valueOf(splittedOut[6]);
+						state.rotZ = Double.valueOf(splittedOut[7]);
 
-					if (nodeId > 0)
-						node.datahub.updateStateForId(nodeId, state);
+						node.datahub.newStateFromId(nodeId, state);
+					}
 				}
 				catch (IOException e)
 				{ //socket borked
@@ -164,32 +172,21 @@ public class TCPServer extends Thread
 			this.finish();
 		}
 
-		public void sendMyUpdatedPositionToAll(ClientState update)
+		//region sendStatus
+		public void sendStatus(ClientState state, ClientState.Action actionOverride) throws IOException
 		{
-			if (connectionSocket.isClosed())
-				return;
+			sendString("[" + state.userId + "|" + actionOverride +
+				"|" + state.posX + "|" + state.posY +
+				"|" + state.posZ + "|" + state.rotX +
+				"|" + state.rotY + "|" + state.rotZ + "]");
+		}
 
-			synchronized (state)
-			{
-				state.replace(update);
-			}
-			for (ClientHandler ch : TCPServer.Clients)
-			{
-				try
-				{
-					ch.sendString(
-						"[" + this.nodeId + "|" + update.action +
-							"|" + update.posX + "|" + update.posY +
-							"|" + update.posZ + "|" + update.rotX +
-							"|" + update.rotY + "|" + update.rotZ + "]"
-					);
-				}
-				catch (IOException e)
-				{
-					Log.Exception("Send failed", e);
-				}
-			}
-
+		public void sendStatus(ClientState st) throws IOException
+		{
+			sendString("[" + st.userId + "|" + st.action +
+				"|" + st.posX + "|" + st.posY +
+				"|" + st.posZ + "|" + st.rotX +
+				"|" + st.rotY + "|" + st.rotZ + "]");
 		}
 
 		public void sendString(String str) throws IOException
@@ -198,25 +195,16 @@ public class TCPServer extends Thread
 				return;
 			try
 			{
-				ByteArrayOutputStream bytestream;
-				bytestream = new ByteArrayOutputStream(str.length());
-
-				DataOutputStream out;
-				out = new DataOutputStream(bytestream);
-
-				for (int i = 0; i < str.length(); i++)
-					out.write((byte) str.charAt(i));
-
-				outToClient.write(bytestream.toByteArray(), 0, bytestream.size());
+				byte[] bt = str.getBytes();
+				outToClient.write(bt, 0, bt.length);
 				outToClient.flush();
-
-				outToClient = new BufferedOutputStream(connectionSocket.getOutputStream());
 			}
 			catch (Exception e)
 			{
 				Log.Exception(e);
 			}
 		}
+		//endregion
 
 		public void finish()
 		{
@@ -228,10 +216,7 @@ public class TCPServer extends Thread
 			catch (IOException ignore) {}
 			if (nodeId > 0)
 				node.datahub.setSlotAsFree(nodeId);
-			synchronized (TCPServer.Clients)
-			{
-				TCPServer.Clients.remove(this);
-			}
+			TCPServer.Clients.remove(this);
 		}
 	}
 }

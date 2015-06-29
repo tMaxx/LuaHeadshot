@@ -20,7 +20,7 @@ import java.util.List;
 public class MpiIntercom
 {
 	/** Buffer length in bytes */
-	static final int BUFFER_LENGTH = 4000;
+	static final int BUFFER_LENGTH = 10000;
 	final ByteBuffer Buffer =
 		ByteBuffer.allocateDirect(
 			MpiIntercom.BUFFER_LENGTH
@@ -108,8 +108,8 @@ public class MpiIntercom
 				continue;
 
 			fetch = new byte[BUFFER_LENGTH];
-
-			stat = MPI.COMM_WORLD.Recv(fetch, 0, BUFFER_LENGTH, MPI.BYTE, MPI.ANY_SOURCE, MPI.ANY_TAG);
+			stat = MPI.COMM_WORLD.Recv(fetch, 0, BUFFER_LENGTH, MPI.BYTE,
+				MPI.ANY_SOURCE, MPI.ANY_TAG);
 
 			if (stat.Get_count(MPI.BYTE) <= 10) //too small to be an object
 				continue;
@@ -120,10 +120,8 @@ public class MpiIntercom
 				Log.Warning("Failed to deserialize message object");
 				continue;
 			}
-
-			switch (msg.messageType)
+			if (msg.messageType == MpiMessage.Type.LOG_MESSAGE)
 			{
-				case LOG_MESSAGE:
 					Log.PrintError((Log.Message)msg.data);
 					continue; //continue while loop
 			}

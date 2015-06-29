@@ -24,12 +24,15 @@ public class SendReceive extends Base
 
 	private void processData()
 	{
+		if (!(last == null || proposed == null))
+			return;
 		//bottom half - last action, upper half - DOA
 		boolean[] ret = new boolean[2 * player.node.size];
 		//check distances travelled
 		for (int i = 1; i < player.node.size; i++)
 			if (checkDistance(last[i], proposed[i], 50.0))
 				ret[i] = true;
+
 		for (int i = player.node.size + 1; i < (2 * player.node.size); i++)
 			ret[i] = (proposed[i - player.node.size].action != Action.DEAD
 						|| proposed[i - player.node.size].action != Action.STUCK);
@@ -61,8 +64,9 @@ public class SendReceive extends Base
 				state = ESendReceive.STATE_PROPOSED;
 				break;
 			case STATE_PROPOSED:
+//				Log.Debug("length" + ((ClientState[])msg.data).length +  ":" + msg.data.toString());
 				proposed = (ClientState[])msg.data;
-				state = ESendReceive.STATE_PROPOSED;
+				state = ESendReceive.STATE_KILLED;
 				break;
 			case STATE_KILLED:
 				if (msg.data != null)
@@ -70,6 +74,7 @@ public class SendReceive extends Base
 				else
 					killed = null;
 				processData();
+				finished = true;
 				state = ESendReceive.WAIT_FINISH;
 				break;
 			case WAIT_FINISH:

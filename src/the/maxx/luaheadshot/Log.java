@@ -9,6 +9,8 @@ import java.util.Arrays;
 /** Logger, passes messages to root node for output */
 public final class Log
 {
+	private static final boolean IS_DEBUG = true;
+
 	public static final class Message implements Serializable
 	{
 		private static final long serialVersionUID = 1977681904500178161L;
@@ -91,6 +93,6 @@ public final class Log
 
 	public static void Debug(String s)
 	{
-		if (Main.IS_DEBUG) PrintError(new Message("debug", s));
+		if (Log.IS_DEBUG) PrintError(new Message("debug", s));
 	}
 }

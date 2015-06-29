@@ -15,7 +15,7 @@ public class ShutdownHandler implements SignalHandler
 {
 	public static void Install()
 	{
-		//Signal.handle(new Signal("INT"), new ShutdownHandler());
+		Signal.handle(new Signal("INT"), new ShutdownHandler());
 	}
 
 	@Override
@@ -27,6 +27,7 @@ public class ShutdownHandler implements SignalHandler
 			{
 				Log.Info("Quitting in at most 5 seconds...");
 				MpiNode.Me().icomm.SendToAll(new MpiMessage(MpiMessage.Type.FINALIZE_EXECUTION));
+				MpiNode.Me().icomm.BroadcastSend(new MpiMessage(MpiMessage.Type.CYCLE_NOOP));
 
 				Timer tmr = new Timer();
 				tmr.scheduleAtFixedRate(new TimerTask()
@@ -37,7 +38,9 @@ public class ShutdownHandler implements SignalHandler
 					public void run()
 					{
 						if (countdown-- < 0 || MpiNode.Me().isFinishing())
+						{
 							tmr.cancel();
+						}
 					}
 				}, 0, 1000);
 

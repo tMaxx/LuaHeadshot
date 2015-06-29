@@ -9,6 +9,7 @@ public class ClientState implements Serializable
 
 	public ClientState() {}
 	public ClientState(int cid) {userId = cid;}
+	public ClientState(Action act) {action = act;}
 
 	public int userId = -1337;
 	public double posX = 0.0, posY = 0.0, posZ = 0.0;

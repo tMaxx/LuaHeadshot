@@ -14,7 +14,7 @@ public class ThePlayerSudo extends ThePlayer
 		Log.Info("Max players: " + (node.size - 1));
 	}
 
-	public Countdown idleCountdown = new Countdown().setMinutes(2);
+	public Countdown idleCountdown = new Countdown().setMinutes(5);
 
 	BaseSudo sudoAction = null;
 
@@ -63,12 +63,12 @@ public class ThePlayerSudo extends ThePlayer
 				else if (state == PlayerState.SEND_RECEIVE)
 				{ //reset, return to idling
 					state = PlayerState.IDLE;
+					Log.Info("Switch mode: " + state.name());
 					sudoAction = null;
 					idleCountdown.start();
 				}
 			}
 
-			//slight abuse ahead
 			if (state != PlayerState.SEND_RECEIVE)
 				try { Thread.sleep(1000); }
 				catch (InterruptedException ignored) {}

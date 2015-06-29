@@ -1,8 +1,10 @@
 package the.maxx.luaheadshot;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class Datahub extends Thread
 {
@@ -12,10 +14,12 @@ public class Datahub extends Thread
 	private final int size;
 
 	private final AtomicBoolean
-			clientConnected[];
+		clientConnected[],
+		hasNewClientData[];
 	private final AtomicBoolean isSynchronizing;
 
-	private final Semaphore hasNewData;
+	final Semaphore hasNewData;
+	final ReentrantLock readWriteSync;
 
 	public final ClientState[]
 		lastNegotiated,
@@ -34,6 +38,8 @@ public class Datahub extends Thread
 		this.size = node.size;
 
 		hasNewData = new Semaphore(1, true);
+		hasNewClientData = new AtomicBoolean[size];
+		readWriteSync = new ReentrantLock(true);
 		isSynchronizing = new AtomicBoolean(false);
 		lastNegotiated = new ClientState[size];
 		currentStates = new ClientState[size];
@@ -50,17 +56,23 @@ public class Datahub extends Thread
 			currentNegotiate[i] = new ClientState(i);
 			nextCommit[i] = new ClientState(i);
 			clientConnected[i] = new AtomicBoolean(false);
+			hasNewClientData[i] = new AtomicBoolean(false);
 		}
+
 		Log.Debug("Datahub init'd");
 	}
 
+	//region player id manage
 	public boolean hasPlayers() { return !TCPServer.Clients.isEmpty(); }
 
 	public int getNextFreeSlotId()
 	{
 		for (int i = 1; i < size; i++)
 			if (clientConnected[i].compareAndSet(false, true))
+			{
+				currentStates[i].action = ClientState.Action.CONNECTED;
 				return i;
+			}
 		return -1;
 	}
 
@@ -73,96 +85,134 @@ public class Datahub extends Thread
 
 		clientConnected[id].compareAndSet(true, false);
 	}
+	//endregion
 
 	private static double[][] SpawnPointCoord = new double[][]{
-		{-380, -2200, 70},
-		{390, -10, 60},
-		{-1337.82, 1215, 740},
-		{-530, -1720, 750},
-		{1360, -700, 740},
+		{-380.0, -2200.0, 108.0},
+		{390.0, -10.0, 108.0},
+//		{-1337.82, 1215, 740},
+//		{-530, -1720, 750},
+//		{1360, -700, 740},
 	};
-	public void moveToRespawnPoint(int nodeid)
+	public ClientState getRespawnPoint()
 	{
-		ClientState cs = new ClientState();
-		int idx = MpiIntercom.Random.nextInt(5);
-		cs.posX = SpawnPointCoord[idx][0];
-		cs.posY = SpawnPointCoord[idx][1];
-		cs.posZ = SpawnPointCoord[idx][2];
-		cs.action = ClientState.Action.ALIVE;
-		nextCommit[nodeid].replace(cs);
+		ClientState ret = new ClientState();
+		ret.action = ClientState.Action.ALIVE;
+		int idx = MpiIntercom.Random.nextInt(SpawnPointCoord.length);
+		ret.posX = SpawnPointCoord[idx][0];
+		ret.posY = SpawnPointCoord[idx][1];
+		ret.posZ = SpawnPointCoord[idx][2];
+		return ret;
 	}
 
-	public void updateStateForId(int nodeid, ClientState st)
+	public ClientState moveToRespawnPoint(int nodeid)
+	{
+		nextCommit[nodeid].replace(getRespawnPoint());
+		hasNewClientData[nodeid].set(true);
+		return nextCommit[nodeid].copy();
+	}
+
+	public void newStateFromId(int nodeid, ClientState st)
 	{
 		if (nodeid < 1) //is an observer
 			return;
 		if (!isSynchronizing.get())
 		{
+			readWriteSync.lock();
 			if (st.action == ClientState.Action.OPONNENT_DEAD)
-				synchronized (pronouncedDead)
-				{
-					pronouncedDead.add(st);
-				}
+				pronouncedDead.add(st);
 			else
-				synchronized (currentStates)
-				{
-					currentStates[nodeid].replace(st);
-					hasNewData.release();
-				}
+			{
+				currentStates[nodeid].replace(st);
+				hasNewClientData[nodeid].set(true);
+				hasNewData.release();
+			}
+			readWriteSync.unlock();
 		}
 	}
 
+	public void announceNewPlayer(TCPServer.ClientHandler player)
+	{
+		ClientState state = currentStates[player.nodeId].replace(getRespawnPoint());
+		for (TCPServer.ClientHandler client : TCPServer.Clients)
+		{
+			try
+			{
+				if (player.nodeId > 0 && player.nodeId != client.nodeId)
+					client.sendStatus(state, ClientState.Action.ENEMY_CONNECTED);
+				else
+					client.sendStatus(state, ClientState.Action.CONNECTED);
+			}
+			catch (IOException e)
+			{
+				Log.Exception("New client announce failed: my id:" + player.nodeId + ", their:" + client.nodeId, e);
+			}
+		}
+	}
+
+	//resync all client data to all clients
+	public void setAllAsNew()
+	{
+		for (int i = 0; i < size; i++)
+			hasNewClientData[i].set(true);
+		hasNewData.release();
+	}
+
+	//region commit-revoke-freeze
 	public void freeze()
 	{
-		synchronized (currentStates)
-		{
-			synchronized (pronouncedDead)
-			{
-				confirmedDead.clear();
-				confirmedDead.addAll(pronouncedDead);
-				pronouncedDead.clear();
-			}
+		readWriteSync.lock();
+			confirmedDead.clear();
+			confirmedDead.addAll(pronouncedDead);
+			pronouncedDead.clear();
+
 			for (int i = 1; i < size; i++)
 				currentNegotiate[i].replace(currentStates[i]);
-		}
+		readWriteSync.unlock();
 	}
 
+	//move data from negotiated to
 	public void commitAll()
 	{
 		isSynchronizing.set(true);
-		synchronized (currentStates)
+		readWriteSync.lock();
+
+		for (int n = 1; n < size; n++)
 		{
-			for (int n = 1; n < size; n++)
-			{
-				currentStates[n].replace(nextCommit[n]);
-				currentNegotiate[n].replace(nextCommit[n]);
-				lastNegotiated[n].replace(nextCommit[n]);
-			}
-			hasNewData.release();
+			currentStates[n].replace(nextCommit[n]);
+			currentNegotiate[n].replace(nextCommit[n]);
+			lastNegotiated[n].replace(nextCommit[n]);
+			hasNewClientData[n].set(true);
 		}
+		hasNewData.release();
+
+		readWriteSync.unlock();
 		isSynchronizing.set(false);
 	}
 
 	public void revokeAll()
 	{
 		isSynchronizing.set(true);
-		synchronized (currentStates)
-		{
+		readWriteSync.lock();
 			for (int n = 1; n < size; n++)
 			{
 				currentStates[n].replace(lastNegotiated[n]);
 				currentNegotiate[n].replace(lastNegotiated[n]);
 				nextCommit[n].replace(lastNegotiated[n]);
+				hasNewClientData[n].set(true);
 			}
 			hasNewData.release();
-		}
+		readWriteSync.unlock();
 		isSynchronizing.set(false);
 	}
 
 	public void revoke(int node)
 	{
+		readWriteSync.lock();
 		nextCommit[node] = lastNegotiated[node].copy();
+		readWriteSync.unlock();
 	}
+	//endregion
 
 	@Override
 	public void run()
@@ -172,12 +222,20 @@ public class Datahub extends Thread
 			try
 			{
 				hasNewData.acquire();
-				synchronized (currentStates)
-				{
-					for (TCPServer.ClientHandler ch : TCPServer.Clients)
-						if (ch.nodeId > 0)
-							ch.sendMyUpdatedPositionToAll(currentStates[ch.nodeId]);
-				}
+				readWriteSync.lock();
+				//iterate over all states, send to all clients
+				for (int i = 1; i < size; i++)
+					if (hasNewClientData[i].getAndSet(false))
+						for (TCPServer.ClientHandler ch : TCPServer.Clients)
+							try
+							{
+								ch.sendStatus(currentStates[i]);
+							}
+							catch (IOException e)
+							{
+								Log.Exception("Send failed", e);
+							}
+				readWriteSync.unlock();
 			}
 			catch (InterruptedException ignored) {}
 		}
